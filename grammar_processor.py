@@ -1,5 +1,4 @@
-# __init__ and count methods started from:
-# http://www.decontextualize.com/teaching/dwwp/topics-n-grams-and-markov-chains/
+# Bigram model courtesy of old assignment from Dr. Jordan Boyd-Graber
 import sys
 import warnings
 import random
@@ -14,9 +13,6 @@ from collections import Counter
 
 # Automatically processes on initialization
 class GrammarProcessor(object):
-	# n is the n in ngrams
-	# inputString is a formatted string stripped of newlines and with spaces between punctuation
-	# TODO: use a less hack-y method to get starters
 	def __init__(self, inputString, senTree, min_unigram=10, max_unigram=300):
 		self.inputString = inputString
 		self.counts = Counter() 			# counts of unigrams
@@ -289,12 +285,6 @@ class SentenceTree(object):
 
 	def __repr__(self):
 		return '<tree node representation>'
-
-# end result: object with count of each ngram, count of individual words, and list of sentence-starting words
-
-# TODO:
-# Use actual bigram model w/chi-squared and things
-# Improve space, time efficiency
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
