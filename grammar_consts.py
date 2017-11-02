@@ -41,13 +41,16 @@ def add_to_dict(dictionary, item, increment=1):
 def box(inputString, numChars=0, justify='center'):
 	if (not numChars):
 		numChars = len(inputString) + 4
-	topBottom = '+' + '-' * (numChars - 2) + '+'
 	textWidth = numChars - 4 # -4 for | and spaces
+	topBottom = '+' + '-' * (numChars - 2) + '+'
 	middle = ''
 	# loop setup
 	repeat = len(inputString) // textWidth # integer division
 	reps = 0
 	for i in range(repeat):
+		if (inputString[(i + 1) * textWidth - 1:(i + 1) * textWidth]) != ' ':
+			inputString = inputString[:(i + 1) * textWidth - 1] + '-' + \
+						  inputString[(i + 1) * textWidth - 1:]
 		middle += '| ' + inputString[i * textWidth:(i + 1) * textWidth] + ' |\n'
 		reps += 1
 	remaining = len(inputString) - reps * textWidth
