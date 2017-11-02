@@ -1,115 +1,134 @@
 # __init__ and count methods started from:
 # http://www.decontextualize.com/teaching/dwwp/topics-n-grams-and-markov-chains/
 import sys
+import warnings
 import random
 import numpy.random as nrandom
 import nltk
 import grammar_consts as gc
 import argparse
 import pickle
+from scipy import zeros
+from scipy.stats import chisquare
+from collections import Counter
 
-class NGramProcessor(object):
+# Automatically processes on initialization
+class GrammarProcessor(object):
 	# n is the n in ngrams
 	# inputString is a formatted string stripped of newlines and with spaces between punctuation
 	# TODO: use a less hack-y method to get starters
-	def __init__(self, n, inputString, sentences, senTree):
-		self.n = n				# the n in  n-grams
-		self.ngrams = dict()	# counts of n-grams
-		self.starters = dict()	# from sentence-starting words to their respective integer counts
-		self.tags = dict()		# from word to list of strings representing corresponding POS
-		self.default = dict() 	# inverse tags now, from POS to words
-		self.counts = dict()
-		self.root = senTree 	# starting node of the sentence parse tree
-		print(inputString[0:1000] + '...') # for verification of chosen text, formatting visibility
-		self.process(inputString, sentences)
-		self.start = self.get_prob_dict(self.starters)
+	def __init__(self, inputString, senTree, min_unigram=10, max_unigram=300):
+		self.inputString = inputString
+		self.counts = Counter() 			# counts of unigrams
+		self.min_unigram = min_unigram		# min word observations before accepted in self.bigrams
+		self.max_unigram = max_unigram		# max ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+		self.begin_counts = Counter() 		# counts of unigrams which begin bigrams
+		self.total = 0						# sum of every word count in counts
+		self.bigrams = dict()				# counts of bigrams
+		self.starters = dict()				# from sentence-starting words to probability
+		self.tags = dict()					# from word to list of strings representing corresponding POS
+		self.default = dict() 				# inverse tags now, from POS to words
+		self.root = senTree 				# starting node of the sentence parse tree
+		# for verification of chosen text, formatting visibility:
+		print(gc.box('Sample text: ' + inputString[0:500] + '...', gc.TERMINAL_WIDTH, justify='left'))
+		self.process()
 
-	# make this more efficient so that everything is performed in a single loop
-	# currently three steps:
-	# 1. populate the default dictionary containing counts of individual words
-	# 2. tag each word in each sentence with its part of speech
-	# 3. populate list of ngrams
-	def process(self, inputString, sentences):
-		tokens = inputString.split()
-		# populate default dictionary
-		self.count_tokens(tokens)
-		self.build_sentence_tree(sentences)
-		# populate self.ngrams 
-		for i in range(len(tokens) - self.n + 1):
-			gram = tuple(tokens[i:(i + self.n)])
-			gc.add_to_dict(self.ngrams, gram)
-
-	# sort of slightly deprecated, but need the starters thing
-	def count_tokens(self, tokens):
+	# start with empty sentence
+	# 	going word by word:
+	# 	add word to counts, ignore punctuation, add to sentence
+	# 	if in intersentence punct:
+	# 		set flag
+	# 		add next word to starters
+	# 		finalize sentence
+	def process(self):
+		startWords = dict()
+		sentences = list()
+		tokens = self.inputString.split()
 		nextIsStarter = 1 # first word starts the first sentence
+		sentence = ''
 		for token in tokens:
-			gc.add_to_dict(self.counts, token)
-			if (nextIsStarter):
-				gc.add_to_dict(self.starters, token)
-				nextIsStarter = 0
-			elif (token in gc.INTERSENTENCE_PUNCT):
-				nextIsStarter = 1		
-
-	# build the sentence parsing tree, that is:
-	# a tree where each branch represents the parts of speech corresponding to . . .
-	# an observed sequence of words within a sentence within the text
-	def build_sentence_tree(self, sentences):
-		for sentence in sentences:
-			# tokens = nltk.word_tokenize(sentence)
-			tokens = sentence.split() # this keeps conjunctions, which is easier to process naively
-			tagged = nltk.pos_tag(tokens)
-			currNode = self.root # reset for each new sentence
-			for tag in tagged:
-				self.add_tag(tag[0], tag[1])
-				if (tag[1] not in self.default.keys()): # make sure an entry exists for the tag
-					self.default[tag[1]] = dict()
-				gc.add_to_dict(self.default[tag[1]], tag[0])
-				currNode.insert(tag[1])
-				currNode = currNode.branches[tag[1]] # get next node in tree
-		# print('printing tree...')
-		# print(self.root.toString())
-
-	# given previous word in the output, returns probabilistically chosen next word
-	def generate(self, node, prev = '', i = 0, nNgramUse = 0):
-		if (not prev or prev in gc.INTERSENTENCE_PUNCT):
-			start = self.choose_start()
-			while(start == '.'):
-				start = self.choose_start() # incredibly hack-y and bad, change this
-			startTag = self.tags[start.lower()][0] # get the first POS of chosen starting word
-			nextNode = self.root.branches[startTag] 
-			return start.title() + ' ' + self.generate(nextNode, start, i + 1, nNgramUse)
-		else:
-			options = dict()
-			for option in node.branches.keys():
-				options[option] = node.branches[option].freq
-			options = self.get_prob_dict(options)
-			if (not options):
-				return '.\nStats: ' + str(nNgramUse) + ' ngram usages for ' + str(i) + ' iterations.\n'
-			# choose a POS from the tree based on frequency
-			option = nrandom.choice(list(options.keys()), p=list(options.values()))
-			# possibilities = self.choose_default(options)
-			possibilities = self.default[option]
-			ngram_poss = self.grab_possibilities(prev)
-			combined = set(possibilities.keys()) & set(ngram_poss.keys())
-			prob_poss = None
-			if (combined):
-				# https://stackoverflow.com/questions/6505008/dictionary-keys-match-on-list-get-key-value-pair
-				comb_poss = {k: ngram_poss[k] for k in combined if k in ngram_poss} # get the counts too, very hack-y
-				prob_poss = self.get_prob_dict(comb_poss)
-				nNgramUse += 1
+			sentence += token
+			if (token in gc.INTERSENTENCE_PUNCT):
+				sentences.append(sentence)
+				self.add_to_tree(sentence)
+				sentence = ''
+				nextIsStarter = 1
 			else:
-				prob_poss = self.get_prob_dict(possibilities)
-			# chooses from all possibilities based on associated probabilities
-			nextWord = nrandom.choice(list(prob_poss.keys()), p=list(prob_poss.values()))
-			# get common element between chosen word and options, from jamylak's answer at:
-			# https://stackoverflow.com/questions/16118621/first-common-element-from-two-lists/16118989#16118989
-			tag_set = set(self.tags[nextWord.lower()])
-			pos = next((a for a in options if a in tag_set), None)
-			# capitalize 'i's
-			if (nextWord in gc.ME):
-				nextWord = nextWord.title()
-			nextNode = node.branches[pos]
-			return nextWord + ' ' + self.generate(nextNode, nextWord, i + 1, nNgramUse)
+				sentence += ' '
+				if (nextIsStarter):
+					gc.add_to_dict(startWords, token)
+					nextIsStarter = 0
+				if (token not in gc.PUNCT):
+					self.counts[token] += 1
+		self.total = sum(self.counts.values())
+		self.starters = self.get_prob_dict(startWords)
+		self.process_bigrams(sentences)
+
+	def add_to_tree(self, sentence):
+		tokens = sentence.split() 
+		tagged = nltk.pos_tag(tokens)
+		currNode = self.get_root()
+		for tag in tagged:
+			self.add_tag(tag[0], tag[1])
+			if (tag[1] not in self.default.keys()): # make sure an entry exists for the tag
+				self.default[tag[1]] = dict()
+			gc.add_to_dict(self.default[tag[1]], tag[0])
+			currNode.insert(tag[1])
+			currNode = currNode.branches[tag[1]] # get next node in tree
+
+	def process_bigrams(self, sentences):
+		# assert already processed 
+		prev = ''
+		bigramCounts = dict()
+		for sentence in sentences:
+			tokens = sentence.split()
+			for token in tokens:
+				if (prev): # and prev not in gc.PUNCT and word not in gc.PUNCT):
+					gc.add_to_dict(bigramCounts, (prev, token))
+					gc.add_to_dict(self.begin_counts, prev)
+				prev = token
+		self.bigrams = self.score_bigrams(bigramCounts)
+
+	def score_bigrams(self, bigramCounts):
+		scored = dict()
+		for bigram in bigramCounts:
+			maxCount = max(self.counts[bigram[0]], self.counts[bigram[1]])
+			minCount = min(self.counts[bigram[0]], self.counts[bigram[1]])
+			if any(x in gc.EXCLUDE for x in bigram):
+				scored[bigram] = 1.0
+			else:
+				obs, ex = self.observed_and_expected(bigramCounts, bigram)
+				scored[bigram] = self.chisquare_pvalue(obs, ex)
+		return scored
+
+	def observed_and_expected(self, bigramCounts, bigram):
+		obs = zeros((2, 2))
+		obs[0][0] = bigramCounts.get((bigram[0], bigram[1]), 0) # num both
+		obs[0][1] = self.begin_counts[bigram[0]] - bigramCounts.get((bigram[0], bigram[1]), 0) # 2 w/o 1
+		obs[1][0] = self.counts[bigram[0]] - bigramCounts.get((bigram[0], bigram[1]), 0) # 1 w/o 2
+		obs[1][1] = self.total # num all
+
+		# compute observed values
+		total = sum(sum(val) for val in obs)
+		row1 = sum(val for val in obs[0])
+		row2 = sum(val for val in obs[1])
+		col1 = obs[0][0] + obs[1][0]
+		col2 = obs[0][1] + obs[1][1]
+
+		# compute expected values
+		ex = zeros((2, 2))
+		ex[0][0] = (row1 * col1) / total
+		ex[0][1] = (row1 * col2) / total
+		ex[1][0] = (row2 * col1) / total
+		ex[1][1] = (row2 * col2) / total
+
+		return obs, ex
+
+	def chisquare_pvalue(self, obs, ex):
+		with warnings.catch_warnings():
+			warnings.simplefilter('ignore')
+			not_needed, pval = chisquare(obs, ex, 2, axis=None)
+			return pval
 
 	def add_tag(self, word, pos):
 		if (word in self.tags.keys()):
@@ -118,12 +137,20 @@ class NGramProcessor(object):
 		else:
 			self.tags[word] = [pos]
 
-	def grab_possibilities(self, prev):
+	def grab_bigrams(self, prev, choice):
 		result = dict()
-		for key in self.ngrams.keys():
-			if (key[0] == prev):
-				gc.add_to_dict(result, key[1])
+		for key in self.bigrams.keys():
+			# if prev matches the first word in bigram and following is correct POS (choice):
+			if (key[0] == prev and choice in self.tags[key[1]]):
+				 # weight bigrams heavily by frequency, + 1 for no division by 0
+				gc.add_to_dict(result, key[1], (1 - self.bigrams[key]) * 1000 + 1)
 		return result
+
+	# get common element between chosen word and options, from jamylak's answer at:
+	# https://stackoverflow.com/questions/16118621/first-common-element-from-two-lists/16118989#16118989
+	# returns common element or None if none found, method entirely for readability
+	def grab_common_element(self, first, second):
+		return next((a for a in second if a in first), None)
 
 	def choose_default(self, options):
 		possibilities = dict()
@@ -133,25 +160,46 @@ class NGramProcessor(object):
 
 	# choose from any word which started a sentence in the original text
 	def choose_start(self):
-		return nrandom.choice(list(self.start.keys()), p=list(self.start.values()))
+		return nrandom.choice(list(self.starters.keys()), p=list(self.starters.values()))
 
 	# given a dictionary from any key to number values, returns a dictionary from
 	# same keys to calculated probabilities as values 
 	def get_prob_dict(self, dictionary):
 		total = sum(dictionary.values())
+		if (total == 0):
+			print(dictionary)
 		result = dict()
 		for key in dictionary.keys():
 			result[key] = dictionary[key] / total
 		return result
 
-	def get_ngrams(self):
-		return self.ngrams
+	# probabilistically generates full sentence based on observed text
+	def generate(self, node):
+		gen = ''
+		nextWord = self.choose_start()
+		while (node.branches): # while the current node still has branches to traverse
+			gen += nextWord + ' '
+			options = {option: node.branches[option].freq for option in node.branches.keys()}
+			options = self.get_prob_dict(options)
 
+			# choose a POS from the tree based on frequency
+			choice = nrandom.choice(list(options.keys()), p=list(options.values()))
+			possibilities = {word: 1 for word in self.default[choice]}
+			additions = self.grab_bigrams(nextWord, choice)
+			# if (additions):
+			# 	print('Used some bigram counts: ' + nextWord + ' --> ' + str(additions))
+			possibilities.update(additions) # maybe at some point check if this is getting used
+			prob_poss = self.get_prob_dict(possibilities)
+
+			# chooses from all possibilities based on associated probabilities
+			nextWord = nrandom.choice(list(prob_poss.keys()), p=list(prob_poss.values()))
+			pos = self.grab_common_element(set(self.tags[nextWord]), options)
+			node = node.branches[pos]
+		return gen
+
+	# get methods
 	def get_starters(self):
 		return self.starters
-
-	def get_start(self):
-		return self.start
 
 	def get_default(self):
 		return self.default
@@ -168,60 +216,46 @@ class NGramProcessor(object):
 # Turns a multi-line file into one long line with splits on punctuation.
 class Formatter(object):
 	def __init__(self, address):
-		self.formatted = ''
-		self.sentences = list()
-		# extract lines from file to format
 		file = open(address)
 		lines = file.readlines()
 		file.close()
 		self.formatted = self.format_lines(lines)
-		self.sentences = self.create_sents(self.formatted)
 
 	def format_lines(self, lines):
 		final = ''
 		for line in lines:
 			tokens = line.lower().strip().split()
 			# check for punctuation and split on that
-			for token in tokens:
-				i = tokens.index(token)
-				self.check_punct(tokens, token, i)
+			for i, token in enumerate(tokens):
+				self.check_punct(tokens, i)
 			# add tokens in the form of a line to a string
 			newLine = ' '.join(tokens)
 			final += newLine + ' '
 		return final
 
-	def check_punct(self, tokens, token, i):
+	def check_punct(self, tokens, i):
 		tokens[i] = tokens[i].replace('“', '"')
 		tokens[i] = tokens[i].replace('”', '"')
 		tokens[i] = tokens[i].replace('‘', '\'')
 		tokens[i] = tokens[i].replace('’', '\'')
+		# these are all different, they just look the same in a monospace font...
+		tokens[i] = tokens[i].replace('‒', ' ‒ ')
+		tokens[i] = tokens[i].replace('–', ' – ')
+		tokens[i] = tokens[i].replace('—', ' — ')
+		tokens[i] = tokens[i].replace('―', ' ― ')
+		tokens[i] = tokens[i].replace('[', '')
+		tokens[i] = tokens[i].replace(']', '')
 		# here, eventually actually handle quotes instead of just getting rid of them
 		tokens[i] = tokens[i].strip('\'')
 		tokens[i] = tokens[i].strip('\"')
 		# make sure not checking punctuation, otherwise infinite loop
-		if (tokens[i][-1:] in gc.PUNCT and len(token) > 1):
+		if (tokens[i][-1:] in gc.PUNCT and len(tokens[i]) > 1):
 			# break into two grams (so ['becomes,'] becomes ['becomes', ','])
 			tokens.insert(i + 1, (tokens[i])[-1:])
 			tokens[i] = (tokens[i])[:-1]
 
-	def create_sents(self, inputString):
-		sentences = list()
-		sentence = ''
-		words = inputString.split()
-		for word in words:
-			if (word in gc.INTERSENTENCE_PUNCT):
-				# complete sentence, add to sentences and restart
-				sentences.append(sentence)
-				sentence = ''
-			else:
-				sentence += ' ' + word # might have fencepost issue here
-		return sentences
-
 	def get_formatted(self):
 		return self.formatted
-
-	def get_sentences(self):
-		return self.sentences
 
 # idea from http://www.openbookproject.net/thinkcs/python/english2e/ch21.html
 # tree with each node containing:
@@ -244,7 +278,7 @@ class SentenceTree(object):
 
 	# different name convention for different print usage, making Java method comparison
 	def toString(self, level = 0):
-		ret = " " * level + repr(self.data) + ': '+ str(self.freq) + "\n"
+		ret = '.' * level + repr(self.data) + ': '+ str(self.freq) + '\n'
 		if (True): # (level < 10):
 			for branch in self.branches.values():
 				ret += branch.toString(level + 1)
@@ -262,32 +296,29 @@ class SentenceTree(object):
 # Use actual bigram model w/chi-squared and things
 # Improve space, time efficiency
 
-if __name__ == "__main__":
+if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('filepath')
 	parser.add_argument('-o', '--outname', default='output',
 						help='Filename for output, so -o=innsmouth will write to ./processed/innsmouth.pkl')
-	parser.add_argument('-n', '--ngram', type=int, default=3,
-						help='Number of _grams to read, 2 = bigram, 3 = trigram, etc.')
 	args = parser.parse_args()
 
+	print(gc.box('Formatting...', gc.TERMINAL_WIDTH))
 	# eventually check if valid filepath
 	formatter = Formatter(args.filepath)
 	formatted = formatter.get_formatted()
-	sentences = formatter.get_sentences()
 	senTree = SentenceTree() # root of final sentence tree
-	processed = NGramProcessor(args.ngram, formatted, sentences, senTree)
-	ngrams = processed.get_ngrams()
-	# for ngram in ngrams.keys():
-	# 	count = ngrams[ngram]
-	# 	if (count > 1):
-	# 		print(' '.join(ngram) + ": " + str(count))
-	print('+-------------------------------------DONE-------------------------------------+')
-	print('Number of unique words: ' + str(len(processed.get_counts())))
-	# print(processed.get_starters())
-	# print(processed.get_default())
-	# print(processed.get_tags())
+
+	print(gc.box('Processing...', gc.TERMINAL_WIDTH))
+	processor = GrammarProcessor(formatted, senTree)
+	print(gc.box('Number of unique words: ' + str(len(processor.get_counts())), 
+			gc.TERMINAL_WIDTH, justify='right'))
+	# print(processor.get_root().toString())
+	# print(processor.get_starters())
+	# print(processor.get_default())
+	# print(processor.get_tags())
 
 	# save the object for use by the generator
 	with open('./processed/' + args.outname + '.pkl', 'wb') as outpath:
-		pickle.dump(processed, outpath)
+		pickle.dump(processor, outpath)
+	print(gc.box('DONE', gc.TERMINAL_WIDTH))
